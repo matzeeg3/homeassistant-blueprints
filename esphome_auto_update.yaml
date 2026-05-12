@@ -135,36 +135,33 @@ blueprint:
     telegram_event_entity:
       name: "[Telegram] Event Entity"
       description: >
-        Entity ID of the event entity created by the Telegram Bot integration.
-        Find it at Settings → Devices & Services → Telegram Bot → your entry.
-        Typically named event.<botname>_update or similar.
+        The event entity created by the Telegram Bot integration for your bot.
+        This is what receives incoming callbacks when a button is tapped.
         Only used when Notification Method is "Telegram".
-      default: "event.telegram_bot_update"
       selector:
-        text:
+        entity:
+          domain: event
 
     telegram_notify_entity:
-      name: "[Telegram] Notify Entity"
+      name: "[Telegram] Notify Entity (Chat)"
       description: >
-        Entity ID of the notify entity for your Telegram chat.
-        Typically named notify.telegram_<chatname>.
-        Find it at Developer Tools → Actions → search "notify.telegram".
+        The notify entity for the specific Telegram chat to send messages to.
+        One entry appears per allowed chat ID configured in the integration.
         Only used when Notification Method is "Telegram".
-      default: "notify.telegram_bot_chat"
       selector:
-        text:
+        entity:
+          domain: notify
 
     # ── Email ─────────────────────────────────────────────────────────────────
 
     email_notify_service:
       name: "[Email] Notify Service"
       description: >
-        Full action name of your email notify service, e.g. notify.smtp or
-        notify.gmail. Find it at Developer Tools → Actions → search "notify.".
+        The notify entity for your email integration (e.g. notify.smtp).
         Only used when Notification Method is "Email".
-      default: "notify.smtp"
       selector:
-        text:
+        entity:
+          domain: notify
 
     # ── Update behaviour ──────────────────────────────────────────────────────
 
