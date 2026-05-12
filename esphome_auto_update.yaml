@@ -142,26 +142,31 @@ blueprint:
         entity:
           domain: event
 
-    telegram_notify_entity:
-      name: "[Telegram] Notify Entity (Chat)"
+    telegram_notify_target:
+      name: "[Telegram] Chat"
       description: >
-        The notify entity for the specific Telegram chat to send messages to.
-        One entry appears per allowed chat ID configured in the integration.
+        The Telegram chat to send notifications to.
+        One entry appears per chat ID you have added as a subentry in the
+        Telegram Bot integration (Settings → Devices & Services → Telegram Bot
+        → Add allowed chat ID).
         Only used when Notification Method is "Telegram".
       selector:
-        entity:
-          domain: notify
+        target:
+          entity:
+            domain: notify
+            integration: telegram_bot
 
     # ── Email ─────────────────────────────────────────────────────────────────
 
-    email_notify_service:
+    email_notify_target:
       name: "[Email] Notify Service"
       description: >
-        The notify entity for your email integration (e.g. notify.smtp).
+        The email notify service to send notifications to (e.g. notify.smtp).
         Only used when Notification Method is "Email".
       selector:
-        entity:
-          domain: notify
+        target:
+          entity:
+            domain: notify
 
     # ── Update behaviour ──────────────────────────────────────────────────────
 
@@ -199,8 +204,11 @@ variables:
   sequential_delay: !input sequential_delay
   notification_method: !input notification_method
   telegram_event_entity: !input telegram_event_entity
-  telegram_notify_entity: !input telegram_notify_entity
-  email_notify_service: !input email_notify_service
+  # Extract a plain entity_id string from the target object for
+  # telegram_bot.send_message which needs entity_id in data, not as a target.
+  telegram_notify_entity: >
+    {% set t = (telegram_notify_target | default({})) %}
+    {{ t.entity_id if t.entity_id is string else t.entity_id | first }}
   device_list: >
     {{ expand(integration_entities('esphome'))
     | selectattr("entity_id", "contains", "update")
@@ -365,9 +373,9 @@ action:
                      state_attr(telegram_event_entity, 'command') == '/CANCEL_ESPHOME_UPDATE' }}
             then:
               - continue_on_error: true
-                action: telegram_bot.send_message
+                action: notify.send_message
+                target: !input telegram_notify_target
                 data:
-                  entity_id: "{{ telegram_notify_entity }}"
                   message: "❌ *ESPHome Update Cancelled* — Device updates have been cancelled."
               - stop: "Update cancelled via Telegram"
 
@@ -379,10 +387,12 @@ action:
             value_template: "{{ notification_method == 'email' }}"
         sequence:
           - continue_on_error: true
-            action: "{{ email_notify_service }}"
+            action: notify.send_message
+            target: !input email_notify_target
             data:
-              title: "ESPHome Device Update(s) Scheduled"
               message: >
+                ESPHome Device Update(s) Scheduled
+
                 {{ device_count }} ESPHome device(s) have pending updates and will
                 be updated automatically in {{ update_delay }} minute(s).
 
@@ -447,11 +457,11 @@ action:
             value_template: "{{ notification_method == 'telegram' }}"
         sequence:
           - continue_on_error: true
-            action: telegram_bot.send_message
+            action: notify.send_message
+            target: !input telegram_notify_target
             data:
-              entity_id: "{{ telegram_notify_entity }}"
               message: >
-                ✅ *ESPHome Updates Complete*
+                ✅ ESPHome Updates Complete
                 {{ device_count }} device(s) have been updated: {{ device_names }}.
 
       - conditions:
@@ -459,10 +469,12 @@ action:
             value_template: "{{ notification_method == 'email' }}"
         sequence:
           - continue_on_error: true
-            action: "{{ email_notify_service }}"
+            action: notify.send_message
+            target: !input email_notify_target
             data:
-              title: "ESPHome Updates Complete"
               message: >
+                ESPHome Updates Complete
+
                 {{ device_count }} ESPHome device(s) have been updated successfully.
 
                 Devices: {{ device_names }}
