@@ -1,35 +1,47 @@
 blueprint:
-  name: ESPHome Auto Bulk Update with Telegram Confirmation
-  description: "Erweitertes Original-Blueprint: Führt Updates für ESPHome-Geräte sequentiell aus, fragt aber vorher via Telegram um Erlaubnis."
+  name: ESPHome Auto Bulk Update + Telegram Control
+  description: "Basiert auf matzeeg3's Blueprint. Erweitert um Telegram-Abfrage und vollständige Prozesskontrolle."
   domain: automation
   input:
-    # --- ORIGINAL INPUTS ---
+    # --- ORIGINAL REPO INPUTS ---
     esphome_update_entities:
       name: ESPHome Update Entities
-      description: Die Update-Entitäten der ESPHome Geräte.
+      description: Die Update-Entitäten (z.B. update.esp_firmware).
       selector:
         entity:
           filter:
             - integration: esphome
               domain: update
           multiple: true
+    exclude_devices:
+      name: Exclude Devices
+      description: "Teile des Namens von Geräten, die ignoriert werden sollen (kommagetrennt, z.B. 'test, beta')."
+      default: ""
+      selector:
+        text:
     automation_trigger:
       name: Automation Trigger
-      description: Wann soll die Suche nach Updates starten?
+      description: Wann soll die Prüfung starten?
       default:
         - platform: time
           at: "04:00:00"
       selector:
         trigger: {}
-    exclude_devices:
-      name: Exclude Devices
-      description: "Gerätenamen (oder Teile davon), die ignoriert werden sollen (kommagetrennt)."
-      default: ""
+    pre_update_action:
+      name: Pre-update Action
+      description: Aktionen, die VOR dem ersten Update ausgeführt werden (z.B. Backup).
+      default: []
       selector:
-        text:
+        action: {}
+    post_update_action:
+      name: Post-update Action
+      description: Aktionen, die NACH allen Updates ausgeführt werden.
+      default: []
+      selector:
+        action: {}
     wait_time_between_updates:
       name: Wait time between updates
-      description: Zeitpuffer zwischen den einzelnen Updates.
+      description: Pause zwischen den Geräten.
       default: 30
       selector:
         number:
@@ -38,7 +50,7 @@ blueprint:
           unit_of_measurement: seconds
     update_timeout:
       name: Update Timeout
-      description: Max. Zeit, die ein einzelnes Gerät zum Updaten hat.
+      description: Zeit, nach der ein einzelnes Update als 'fehlgeschlagen' gewertet wird.
       default: 300
       selector:
         number:
@@ -46,21 +58,21 @@ blueprint:
           max: 3600
           unit_of_measurement: seconds
 
-    # --- NEUE TELEGRAM INPUTS ---
+    # --- TELEGRAM INPUTS ---
     telegram_chat_id:
-      name: Telegram Chat ID
-      description: "Die numerische Chat-ID für die Benachrichtigung."
+      name: Telegram Chat ID / Target
+      description: "Die ID deines Telegram Chats (z.B. 12345678). Findest du über den 'getUpdates' Call oder einen Echo-Bot."
       selector:
-        text: # Ein dynamisches Dropdown für Telegram-Chats existiert in HA leider nicht nativ, Text ist hier der sicherste Weg.
+        text:
     telegram_bot_service:
       name: Telegram Bot Service
-      description: Der zu verwendende Dienst (meist telegram_bot.send_message).
+      description: Welcher Dienst soll genutzt werden?
       default: telegram_bot.send_message
       selector:
         text:
     wait_confirmation_timeout:
-      name: Bestätigungs-Timeout
-      description: Wie lange soll auf dein 'OK' gewartet werden, bevor das Update heute abgebrochen wird?
+      name: Bestätigungs-Timeout (Minuten)
+      description: "Wenn du innerhalb dieser Zeit nicht antwortest, wird der Vorgang sicherheitshalber abgebrochen."
       default: 120
       selector:
         number:
@@ -70,48 +82,50 @@ blueprint:
 
 mode: restart
 
+variables:
+  # Liste bereinigen (Exclude-Logik aus dem Original übernommen)
+  entities: !input esphome_update_entities
+  exclude_list: !input exclude_devices
+  update_list: >
+    {% set excludes = exclude_list.split(',') | map('trim') | list %}
+    {% set filtered = entities | select('is_state', 'on') | list %}
+    {% set final = namespace(items=[]) %}
+    {% for item in filtered %}
+      {% set name = state_attr(item, 'friendly_name') or 'Unknown' %}
+      {% set excluded = namespace(found=false) %}
+      {% for ex in excludes if ex != "" %}
+        {% if ex.lower() in name.lower() %}
+          {% set excluded.found = true %}
+        {% endif %}
+      {% endfor %}
+      {% if not excluded.found %}
+        {% set final.items = final.items + [item] %}
+      {% endif %}
+    {% endfor %}
+    {{ final.items }}
+
 trigger: !input automation_trigger
 
 action:
-  # 1. Prüfen, ob überhaupt Updates da sind (Original-Logik vorab simuliert)
-  - variables:
-      entities: !input esphome_update_entities
-      exclude_list: !input exclude_devices
-      # Filtert die Liste nach 'on' und schließt die Exclude-Liste aus
-      update_list: >
-        {% set excludes = exclude_list.split(',') | map('trim') | list %}
-        {% set filtered = entities | select('is_state', 'on') | list %}
-        {% set final = namespace(items=[]) %}
-        {% for item in filtered %}
-          {% set name = state_attr(item, 'friendly_name') %}
-          {% set excluded = namespace(found=false) %}
-          {% for ex in excludes if ex != "" %}
-            {% if ex.lower() in name.lower() %}
-              {% set excluded.found = true %}
-            {% endif %}
-          {% endfor %}
-          {% if not excluded.found %}
-            {% set final.items = final.items + [item] %}
-          {% endif %}
-        {% endfor %}
-        {{ final.items }}
-
-  # Nur fortfahren, wenn die Liste nicht leer ist
+  # Nur fortfahren, wenn wirklich Updates anstehen
   - condition: template
     value_template: "{{ update_list | count > 0 }}"
 
-  # 2. Telegram Nachricht senden
+  # 1. Telegram Anfrage senden
   - service: !input telegram_bot_service
     data:
       target: !input telegram_chat_id
-      title: "🛠️ *ESPHome Updates verfügbar*"
+      title: "🚀 *ESPHome Update Check*"
       message: >
-        Es sind Updates für {{ update_list | count }} Geräte bereit. 
-        Soll ich mit der Installation beginnen?
+        Es sind Updates für {{ update_list | count }} Geräte verfügbar:
+        {% for item in update_list -%}
+          - {{ state_attr(item, 'friendly_name') }}
+        {% endfor %}
+        Soll der Bulk-Update-Prozess gestartet werden?
       inline_keyboard:
         - "Update starten:/esphome_start, Abbrechen:/esphome_stop"
 
-  # 3. Auf Antwort warten
+  # 2. Auf Interaktion warten
   - wait_for_trigger:
       - platform: event
         event_type: telegram_callback
@@ -127,8 +141,9 @@ action:
       minutes: !input wait_confirmation_timeout
     continue_on_timeout: false
 
-  # 4. Falls Start geklickt wurde: Original Bulk-Update Logik ausführen
+  # 3. Entscheidung verarbeiten
   - choose:
+      # FALL: START
       - conditions:
           - condition: template
             value_template: "{{ wait.trigger.event.data.data == '/esphome_start' }}"
@@ -136,28 +151,46 @@ action:
           - service: !input telegram_bot_service
             data:
               target: !input telegram_chat_id
-              message: "✅ Update-Vorgang wird ausgeführt..."
+              message: "⏳ Pre-Update Aktionen werden ausgeführt..."
 
-          # --- BEGINN DER ORIGINALEN SCHLEIFEN-LOGIK ---
+          # PRE-UPDATE ACTIONS (Original)
+          - choose: []
+            default: !input pre_update_action
+
+          - service: !input telegram_bot_service
+            data:
+              target: !input telegram_chat_id
+              message: "✅ Installation beginnt..."
+
+          # DER BULK LOOP (Original Logik)
           - repeat:
               for_each: "{{ update_list }}"
               sequence:
                 - service: update.install
                   target:
                     entity_id: "{{ repeat.item }}"
+                # Warten bis Entität auf 'off' geht oder Timeout
                 - wait_for_trigger:
                     - platform: state
                       entity_id: "{{ repeat.item }}"
                       to: "off"
                   timeout: !input update_timeout
+                
+                # Feedback pro Gerät (Optional, aber für Rock Solid gut)
+                - condition: template
+                  value_template: "{{ repeat.index < update_list | count }}"
                 - delay: !input wait_time_between_updates
-          # --- ENDE DER ORIGINALEN SCHLEIFEN-LOGIK ---
+
+          # POST-UPDATE ACTIONS (Original)
+          - choose: []
+            default: !input post_update_action
 
           - service: !input telegram_bot_service
             data:
               target: !input telegram_chat_id
-              message: "🏁 Alle Updates abgeschlossen."
+              message: "🏁 Alle Updates wurden verarbeitet."
 
+      # FALL: STOP
       - conditions:
           - condition: template
             value_template: "{{ wait.trigger.event.data.data == '/esphome_stop' }}"
@@ -165,4 +198,4 @@ action:
           - service: !input telegram_bot_service
             data:
               target: !input telegram_chat_id
-              message: "❌ Update manuell abgebrochen."
+              message: "❌ Update durch Nutzer abgebrochen."
