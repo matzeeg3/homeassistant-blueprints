@@ -25,10 +25,9 @@ blueprint:
 
     ── INPUT FIELDS THAT DON'T APPLY ───────────────────────────────────────────
 
-    HA blueprints cannot hide unused fields. Fill in only the section that
-    matches your chosen Notification Method; the others are ignored at runtime.
-    For "notify_device" (Mobile App) you must select any device even when
-    using another method — it will not be called.
+    All method-specific fields use text inputs with sensible defaults, so they
+    are truly optional — just leave the default value for any method you are not
+    using. The automation only reads the field(s) matching the selected method.
 
     ── FLOW ────────────────────────────────────────────────────────────────────
 
@@ -120,43 +119,45 @@ blueprint:
 
     # ── Mobile App ────────────────────────────────────────────────────────────
 
-    notify_device:
-      name: "[Mobile App] Notification Device"
+    mobile_app_notify_entity:
+      name: "[Mobile App] Notify Entity"
       description: >
-        Device to notify — requires the Home Assistant Companion App.
-        Only used when Notification Method is "Mobile App".
-        If using another method, select any device; it will be ignored.
+        Entity ID of the Companion App notify entity for the target device,
+        e.g. notify.mobile_app_my_phone.
+        Find it: Developer Tools → States → filter by "notify.mobile_app_".
+        Only relevant when Notification Method is "Mobile App".
+        Leave at the default if not using Mobile App — it will be ignored.
+      default: "notify.mobile_app_phone"
       selector:
-        device:
-          integration: mobile_app
+        text:
 
     # ── Telegram ──────────────────────────────────────────────────────────────
 
     telegram_event_entity:
       name: "[Telegram] Bot Event Entity"
       description: >
-        The event entity created by the Telegram Bot integration.
+        Entity ID of the event entity created by the Telegram Bot integration.
         It receives button-tap callbacks (Cancel / Update Now).
+        Find it: Settings → Devices & Services → Telegram Bot → your entry → Entities.
         Only relevant when Notification Method is "Telegram".
-        If using another method, select any event entity — it will be ignored.
+        Leave at the default if not using Telegram — it will be ignored.
+      default: "event.telegram_bot_update"
       selector:
-        entity:
-          domain: event
-          integration: telegram_bot
+        text:
 
     telegram_notify_entity:
-      name: "[Telegram] Chat"
+      name: "[Telegram] Chat Notify Entity"
       description: >
-        The Telegram chat to send notifications to.
-        One entry appears per chat ID added as a subentry in the Telegram Bot
+        Entity ID of the Telegram chat notify entity, e.g. notify.telegram_my_chat.
+        One entity exists per chat ID added as a subentry in the Telegram Bot
         integration (Settings → Devices & Services → Telegram Bot →
         Add allowed chat ID).
+        Find it: Developer Tools → States → filter by "notify.telegram".
         Only relevant when Notification Method is "Telegram".
-        If using another method, select any entry — it will be ignored.
+        Leave at the default if not using Telegram — it will be ignored.
+      default: "notify.telegram_bot_chat"
       selector:
-        entity:
-          domain: notify
-          integration: telegram_bot
+        text:
 
     # ── Email ─────────────────────────────────────────────────────────────────
 
@@ -205,6 +206,7 @@ variables:
   update_mode: !input update_mode
   sequential_delay: !input sequential_delay
   notification_method: !input notification_method
+  mobile_app_notify_entity: !input mobile_app_notify_entity
   telegram_event_entity: !input telegram_event_entity
   telegram_notify_entity: !input telegram_notify_entity
   email_notify_service: !input email_notify_service
@@ -266,21 +268,22 @@ action:
             value_template: "{{ notification_method == 'mobile_app' }}"
         sequence:
           - continue_on_error: true
-            domain: mobile_app
-            type: notify
-            device_id: !input notify_device
-            title: "ESPHome Device Update(s)"
-            message: >
-              {{ device_count }} device(s) need updating: {{ device_names }}.
-              Updates will begin in {{ update_delay }} minute(s).
+            action: notify.send_message
+            target:
+              entity_id: "{{ mobile_app_notify_entity }}"
             data:
-              sticky: "true"
-              persistent: "true"
-              actions:
-                - action: "UPDATE_NOW_ESPHOME"
-                  title: "Update Now"
-                - action: "CANCEL_ESPHOME_UPDATE"
-                  title: "Cancel"
+              title: "ESPHome Device Update(s)"
+              message: >
+                {{ device_count }} device(s) need updating: {{ device_names }}.
+                Updates will begin in {{ update_delay }} minute(s).
+              data:
+                sticky: "true"
+                persistent: "true"
+                actions:
+                  - action: "UPDATE_NOW_ESPHOME"
+                    title: "Update Now"
+                  - action: "CANCEL_ESPHOME_UPDATE"
+                    title: "Cancel"
 
           - wait_for_trigger:
               - platform: event
@@ -302,11 +305,12 @@ action:
                      wait.trigger.event.data.action == 'CANCEL_ESPHOME_UPDATE' }}
             then:
               - continue_on_error: true
-                domain: mobile_app
-                type: notify
-                device_id: !input notify_device
-                title: "ESPHome Update Cancelled"
-                message: "ESPHome device updates have been cancelled."
+                action: notify.send_message
+                target:
+                  entity_id: "{{ mobile_app_notify_entity }}"
+                data:
+                  title: "ESPHome Update Cancelled"
+                  message: "ESPHome device updates have been cancelled."
               - stop: "Update cancelled via Mobile App"
 
       # ── Telegram ────────────────────────────────────────────────────────────
@@ -446,12 +450,13 @@ action:
             value_template: "{{ notification_method == 'mobile_app' }}"
         sequence:
           - continue_on_error: true
-            domain: mobile_app
-            type: notify
-            device_id: !input notify_device
-            title: "ESPHome Updates Complete"
-            message: >
-              {{ device_count }} device(s) have been updated: {{ device_names }}.
+            action: notify.send_message
+            target:
+              entity_id: "{{ mobile_app_notify_entity }}"
+            data:
+              title: "ESPHome Updates Complete"
+              message: >
+                {{ device_count }} device(s) have been updated: {{ device_names }}.
 
       - conditions:
           - condition: template
