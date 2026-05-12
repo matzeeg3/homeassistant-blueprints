@@ -1,25 +1,54 @@
 blueprint:
-  name: ESPHome Device Auto Bulk Update (Telegram)
+  name: ESPHome Device Auto Bulk Update (Multi-Channel)
   description: |
-    Automatically updates ESPHome devices when a specified number of them
-    have pending updates. Optionally sends a Telegram notification before updating.
+    Automatically updates ESPHome devices when a specified number have pending
+    updates. Supports Mobile App (Companion App), Telegram (new event-entity
+    integration), Email, or no notifications.
 
     DEVICE FIRMWARE ENTITIES MUST BE ENABLED
 
-    FLOW:
-    1. Triggers when any device needs an update, or daily sweep at the start of the time window.
-    2. Checks the time window and device count conditions are met.
-    3. Sends a Telegram message listing devices to be updated with Update Now and Cancel buttons.
-    4. Waits for the delay period listening for a button response.
-    5. If Cancel is tapped - sends a cancellation message and stops.
-    6. If Update Now is tapped or delay expires - proceeds with updates.
-    7. Updates all devices at once or sequentially depending on mode selected.
-    8. Sends a completion message listing updated devices.
-    9. Waits out the cooldown period before the automation can trigger again.
+    ── NOTIFICATION METHODS ────────────────────────────────────────────────────
+
+    Mobile App   → interactive Cancel / Update Now buttons via Companion App
+    Telegram     → interactive inline keyboard buttons via telegram_bot integration
+                   (requires Polling or Webhooks platform, NOT Broadcast)
+    Email        → one-way notification only; always proceeds after the delay
+    None         → silent; updates run automatically after the delay
+
+    ── TELEGRAM SETUP ──────────────────────────────────────────────────────────
+
+    1. Add the Telegram Bot integration (Settings → Devices & Services).
+    2. Find the Event entity it created — usually event.<botname>_update or
+       similar. Enter its entity_id in "[Telegram] Event Entity".
+    3. Find the notify entity for your chat — usually notify.telegram_<chat>.
+       Enter it in "[Telegram] Notify Entity".
+
+    ── INPUT FIELDS THAT DON'T APPLY ───────────────────────────────────────────
+
+    HA blueprints cannot hide unused fields. Fill in only the section that
+    matches your chosen Notification Method; the others are ignored at runtime.
+    For "notify_device" (Mobile App) you must select any device even when
+    using another method — it will not be called.
+
+    ── FLOW ────────────────────────────────────────────────────────────────────
+
+    1. Triggers when ESPHome devices have pending updates, or at window start.
+    2. Checks time window and device count threshold.
+    3. Sends notification via the chosen channel.
+    4. Waits for delay, listening for button response (Mobile App / Telegram).
+    5. If Cancel pressed → sends cancellation notification and stops.
+    6. If Update Now pressed or delay expires → proceeds with updates.
+    7. Updates all devices at once or sequentially.
+    8. Sends completion notification.
+    9. Waits cooldown period before the automation can trigger again.
+
   domain: automation
   source_url: https://github.com/matzeeg3/homeassistant-blueprints/blob/main/esphome_auto_bulk_update.yaml
 
   input:
+
+    # ── Core timing & threshold ────────────────────────────────────────────────
+
     update_threshold:
       name: Device Update Threshold
       description: How many devices need a pending update before updates are pushed.
@@ -69,14 +98,75 @@ blueprint:
       selector:
         time:
 
-    telegram_notify_service:
-      name: Telegram Notify Service
+    # ── Notification channel ───────────────────────────────────────────────────
+
+    notification_method:
+      name: Notification Method
       description: >
-        The full name of your Telegram notify service, e.g. notify.telegram_bot_chat.
-        You can find it under Developer Tools → Actions → search for "notify.telegram".
+        Which channel to use for notifications. Mobile App and Telegram support
+        interactive Cancel / Update Now buttons. Email is one-way only.
+      default: "mobile_app"
+      selector:
+        select:
+          options:
+            - label: "Mobile App (Companion App)"
+              value: "mobile_app"
+            - label: "Telegram (new event-entity integration)"
+              value: "telegram"
+            - label: "Email"
+              value: "email"
+            - label: "None (silent)"
+              value: "none"
+
+    # ── Mobile App ────────────────────────────────────────────────────────────
+
+    notify_device:
+      name: "[Mobile App] Notification Device"
+      description: >
+        Device to notify — requires the Home Assistant Companion App.
+        Only used when Notification Method is "Mobile App".
+        If using another method, select any device; it will be ignored.
+      selector:
+        device:
+          integration: mobile_app
+
+    # ── Telegram ──────────────────────────────────────────────────────────────
+
+    telegram_event_entity:
+      name: "[Telegram] Event Entity"
+      description: >
+        Entity ID of the event entity created by the Telegram Bot integration.
+        Find it at Settings → Devices & Services → Telegram Bot → your entry.
+        Typically named event.<botname>_update or similar.
+        Only used when Notification Method is "Telegram".
+      default: "event.telegram_bot_update"
+      selector:
+        text:
+
+    telegram_notify_entity:
+      name: "[Telegram] Notify Entity"
+      description: >
+        Entity ID of the notify entity for your Telegram chat.
+        Typically named notify.telegram_<chatname>.
+        Find it at Developer Tools → Actions → search "notify.telegram".
+        Only used when Notification Method is "Telegram".
       default: "notify.telegram_bot_chat"
       selector:
         text:
+
+    # ── Email ─────────────────────────────────────────────────────────────────
+
+    email_notify_service:
+      name: "[Email] Notify Service"
+      description: >
+        Full action name of your email notify service, e.g. notify.smtp or
+        notify.gmail. Find it at Developer Tools → Actions → search "notify.".
+        Only used when Notification Method is "Email".
+      default: "notify.smtp"
+      selector:
+        text:
+
+    # ── Update behaviour ──────────────────────────────────────────────────────
 
     update_mode:
       name: Update Mode
@@ -102,12 +192,18 @@ blueprint:
           mode: slider
           unit_of_measurement: minutes
 
+# ── Variables ───────────────────────────────────────────────────────────────
+
 variables:
   update_threshold: !input update_threshold
   update_delay: !input update_delay
   cooldown: !input cooldown
   update_mode: !input update_mode
   sequential_delay: !input sequential_delay
+  notification_method: !input notification_method
+  telegram_event_entity: !input telegram_event_entity
+  telegram_notify_entity: !input telegram_notify_entity
+  email_notify_service: !input email_notify_service
   device_list: >
     {{ expand(integration_entities('esphome'))
     | selectattr("entity_id", "contains", "update")
@@ -124,6 +220,8 @@ variables:
     | selectattr("state", "eq", "on")
     | list | count }}
 
+# ── Triggers ────────────────────────────────────────────────────────────────
+
 trigger:
   - platform: template
     value_template: >
@@ -133,6 +231,8 @@ trigger:
       | list | count > 0 }}
   - platform: time
     at: !input time_window_start
+
+# ── Conditions ──────────────────────────────────────────────────────────────
 
 condition:
   - condition: time
@@ -145,46 +245,172 @@ condition:
       | selectattr("state", "eq", "on")
       | list | count >= update_threshold }}
 
+# ── Actions ─────────────────────────────────────────────────────────────────
+
 action:
-  - continue_on_error: true
-    action: !input telegram_notify_service
-    data:
-      message: >
-        🔄 *ESPHome Device Update(s)*
-        {{ device_count }} device(s) need updating: {{ device_names }}.
-        Updates will begin in {{ update_delay }} minute(s).
-      data:
-        inline_keyboard:
-          - "Update Now 🚀:/UPDATE_NOW_ESPHOME, Cancel ❌:/CANCEL_ESPHOME_UPDATE"
 
-  - wait_for_trigger:
-      - platform: event
-        event_type: telegram_callback
-        event_data:
-          data: "/CANCEL_ESPHOME_UPDATE"
-      - platform: event
-        event_type: telegram_callback
-        event_data:
-          data: "/UPDATE_NOW_ESPHOME"
-    timeout:
-      minutes: "{{ update_delay }}"
-    continue_on_timeout: true
+  # ════════════════════════════════════════════════════════════════════════════
+  # STEP 1 — Notification + wait for user response (or timeout)
+  # Each branch either calls `stop` on cancellation, or falls through to Step 2.
+  # ════════════════════════════════════════════════════════════════════════════
 
-  - if:
-      - condition: template
-        value_template: >
-          {{ wait.trigger is not none and
-             wait.trigger.event.data.data == '/CANCEL_ESPHOME_UPDATE' }}
-    then:
-      - continue_on_error: true
-        action: !input telegram_notify_service
-        data:
-          message: "❌ *ESPHome Update Cancelled* — ESPHome device updates have been cancelled."
-    else:
-      - if:
+  - choose:
+
+      # ── Mobile App ──────────────────────────────────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_method == 'mobile_app' }}"
+        sequence:
+          - continue_on_error: true
+            domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "ESPHome Device Update(s)"
+            message: >
+              {{ device_count }} device(s) need updating: {{ device_names }}.
+              Updates will begin in {{ update_delay }} minute(s).
+            data:
+              sticky: "true"
+              persistent: "true"
+              actions:
+                - action: "UPDATE_NOW_ESPHOME"
+                  title: "Update Now"
+                - action: "CANCEL_ESPHOME_UPDATE"
+                  title: "Cancel"
+
+          - wait_for_trigger:
+              - platform: event
+                event_type: mobile_app_notification_action
+                event_data:
+                  action: "CANCEL_ESPHOME_UPDATE"
+              - platform: event
+                event_type: mobile_app_notification_action
+                event_data:
+                  action: "UPDATE_NOW_ESPHOME"
+            timeout:
+              minutes: "{{ update_delay }}"
+            continue_on_timeout: true
+
+          - if:
+              - condition: template
+                value_template: >
+                  {{ wait.trigger is not none and
+                     wait.trigger.event.data.action == 'CANCEL_ESPHOME_UPDATE' }}
+            then:
+              - continue_on_error: true
+                domain: mobile_app
+                type: notify
+                device_id: !input notify_device
+                title: "ESPHome Update Cancelled"
+                message: "ESPHome device updates have been cancelled."
+              - stop: "Update cancelled via Mobile App"
+
+      # ── Telegram ────────────────────────────────────────────────────────────
+      #
+      # Uses the new event-entity system from the Telegram Bot integration.
+      #
+      # Sending: telegram_bot.send_message with inline_keyboard
+      # Waiting: platform: template watches the event entity for our specific
+      #          callback commands so unrelated messages don't trigger it.
+      # Ack:     telegram_bot.answer_callback_query dismisses the button spinner.
+      #
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_method == 'telegram' }}"
+        sequence:
+          - continue_on_error: true
+            action: telegram_bot.send_message
+            data:
+              entity_id: "{{ telegram_notify_entity }}"
+              message: >
+                🔄 *ESPHome Device Update(s)*
+                {{ device_count }} device(s) need updating: {{ device_names }}.
+                Updates will begin in {{ update_delay }} minute(s).
+              inline_keyboard:
+                - "Update Now 🚀:/UPDATE_NOW_ESPHOME, Cancel ❌:/CANCEL_ESPHOME_UPDATE"
+
+          # Wait only for OUR specific callback commands.
+          # The template trigger re-evaluates whenever the event entity state
+          # changes (i.e. on every new Telegram event), so unrelated messages
+          # (plain text, other callbacks) won't satisfy this trigger.
+          - wait_for_trigger:
+              - platform: template
+                value_template: >
+                  {{ state_attr(telegram_event_entity, 'event_type') == 'telegram_callback'
+                     and state_attr(telegram_event_entity, 'command') in
+                     ['/UPDATE_NOW_ESPHOME', '/CANCEL_ESPHOME_UPDATE'] }}
+            timeout:
+              minutes: "{{ update_delay }}"
+            continue_on_timeout: true
+
+          # Acknowledge the callback to clear the loading spinner on the button.
+          # Only called when the user actually pressed a button (not on timeout).
+          - if:
+              - condition: template
+                value_template: "{{ wait.trigger is not none }}"
+            then:
+              - continue_on_error: true
+                action: telegram_bot.answer_callback_query
+                data:
+                  callback_query_id: "{{ state_attr(telegram_event_entity, 'id') }}"
+                  message: >
+                    {% if state_attr(telegram_event_entity, 'command') == '/CANCEL_ESPHOME_UPDATE' %}
+                    Update cancelled ❌
+                    {% else %}
+                    Updating now 🚀
+                    {% endif %}
+
+          # Stop the automation if Cancel was pressed.
+          - if:
+              - condition: template
+                value_template: >
+                  {{ wait.trigger is not none and
+                     state_attr(telegram_event_entity, 'command') == '/CANCEL_ESPHOME_UPDATE' }}
+            then:
+              - continue_on_error: true
+                action: telegram_bot.send_message
+                data:
+                  entity_id: "{{ telegram_notify_entity }}"
+                  message: "❌ *ESPHome Update Cancelled* — Device updates have been cancelled."
+              - stop: "Update cancelled via Telegram"
+
+      # ── Email ───────────────────────────────────────────────────────────────
+      # Email is one-way only — no interactive buttons possible.
+      # Sends a notification then waits the full delay before proceeding.
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_method == 'email' }}"
+        sequence:
+          - continue_on_error: true
+            action: "{{ email_notify_service }}"
+            data:
+              title: "ESPHome Device Update(s) Scheduled"
+              message: >
+                {{ device_count }} ESPHome device(s) have pending updates and will
+                be updated automatically in {{ update_delay }} minute(s).
+
+                Devices: {{ device_names }}
+
+                Note: This is an automated notification. Replies are not monitored
+                and updates cannot be cancelled via email.
+          - delay:
+              minutes: "{{ update_delay }}"
+
+      # ── None / default: just wait ────────────────────────────────────────────
+    default:
+      - delay:
+          minutes: "{{ update_delay }}"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # STEP 2 — Install updates
+  # Reached only when NOT cancelled (cancelled branches call `stop` above).
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - choose:
+      - conditions:
           - condition: template
             value_template: "{{ update_mode == 'sequential' }}"
-        then:
+        sequence:
           - repeat:
               for_each: "{{ device_list }}"
               sequence:
@@ -195,18 +421,58 @@ action:
                     entity_id: "{{ repeat.item }}"
                 - delay:
                     minutes: "{{ 0 if repeat.last else sequential_delay }}"
-        else:
-          - action: update.install
-            continue_on_error: true
-            data: {}
-            target:
-              entity_id: "{{ device_list }}"
+    default:
+      - action: update.install
+        continue_on_error: true
+        data: {}
+        target:
+          entity_id: "{{ device_list }}"
 
-      - continue_on_error: true
-        action: !input telegram_notify_service
-        data:
-          message: >
-            ✅ *ESPHome Updates Complete* — {{ device_count }} device(s) have been updated: {{ device_names }}.
+  # ════════════════════════════════════════════════════════════════════════════
+  # STEP 3 — Completion notification
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_method == 'mobile_app' }}"
+        sequence:
+          - continue_on_error: true
+            domain: mobile_app
+            type: notify
+            device_id: !input notify_device
+            title: "ESPHome Updates Complete"
+            message: >
+              {{ device_count }} device(s) have been updated: {{ device_names }}.
+
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_method == 'telegram' }}"
+        sequence:
+          - continue_on_error: true
+            action: telegram_bot.send_message
+            data:
+              entity_id: "{{ telegram_notify_entity }}"
+              message: >
+                ✅ *ESPHome Updates Complete*
+                {{ device_count }} device(s) have been updated: {{ device_names }}.
+
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_method == 'email' }}"
+        sequence:
+          - continue_on_error: true
+            action: "{{ email_notify_service }}"
+            data:
+              title: "ESPHome Updates Complete"
+              message: >
+                {{ device_count }} ESPHome device(s) have been updated successfully.
+
+                Devices: {{ device_names }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # STEP 4 — Cooldown
+  # ════════════════════════════════════════════════════════════════════════════
 
   - delay:
       minutes: "{{ cooldown }}"
