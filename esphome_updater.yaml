@@ -1,0 +1,111 @@
+blueprint:
+  name: ESPHome Auto Bulk Update mit Telegram Flow
+  description: Erstellt Updates für ESPHome Geräte und fragt via Telegram nach Bestätigung.
+  domain: automation
+  input:
+    # Bestehende Inputs
+    esphome_update_entities:
+      name: ESPHome Update Entities
+      description: Die Entitäten, die überwacht werden sollen (meist update.device_name_firmware).
+      selector:
+        entity:
+          filter:
+            - integration: esphome
+              domain: update
+          multiple: true
+    # Neue Telegram Inputs
+    telegram_chat_id:
+      name: Telegram Chat ID
+      description: Die ID des Chats, an den die Nachricht gesendet werden soll.
+      selector:
+        text:
+    telegram_bot_service:
+      name: Telegram Bot Service
+      description: Der Dienst zum Senden (z.B. telegram_bot.send_message).
+      default: telegram_bot.send_message
+      selector:
+        text:
+    wait_timeout:
+      name: Wartezeit auf Bestätigung
+      description: Wie lange soll auf den Klick in Telegram gewartet werden, bevor abgebrochen wird?
+      default: 60
+      selector:
+        number:
+          min: 1
+          max: 1440
+          unit_of_measurement: minutes
+
+mode: restart # Verhindert Geister-Prozesse, wenn ein neues Update reinkommt
+
+trigger:
+  - platform: state
+    entity_id: !input esphome_update_entities
+    to: "on"
+    for:
+      minutes: 5
+
+action:
+  # 1. Telegram Nachricht senden mit Inline-Buttons
+  - service: !input telegram_bot_service
+    data:
+      target: !input telegram_chat_id
+      title: "🤖 *ESPHome Updates verfügbar*"
+      message: "Es sind Updates für deine ESPHome Geräte verfügbar. Möchtest du den Bulk-Update jetzt starten?"
+      inline_keyboard:
+        - "Jetzt starten:/esphome_start, Abbrechen:/esphome_stop"
+
+  # 2. Auf Antwort warten
+  - wait_for_trigger:
+      - platform: event
+        event_type: telegram_callback
+        event_data:
+          data: "/esphome_start"
+          chat_id: !input telegram_chat_id
+      - platform: event
+        event_type: telegram_callback
+        event_data:
+          data: "/esphome_stop"
+          chat_id: !input telegram_chat_id
+    timeout:
+      minutes: !input wait_timeout
+    continue_on_timeout: false
+
+  # 3. Entscheidung verarbeiten
+  - choose:
+      # FALL: User hat auf Start geklickt
+      - conditions:
+          - condition: template
+            value_template: "{{ wait.trigger.event.data.data == '/esphome_start' }}"
+        sequence:
+          - service: !input telegram_bot_service
+            data:
+              target: !input telegram_chat_id
+              message: "✅ Update-Vorgang gestartet..."
+          
+          # Hier folgt die originale Update-Logik
+          - repeat:
+              for_each: !input esphome_update_entities
+              sequence:
+                - if:
+                    - condition: state
+                      entity_id: "{{ repeat.item }}"
+                      state: "on"
+                  then:
+                    - service: update.install
+                      target:
+                        entity_id: "{{ repeat.item }}"
+          
+          - service: !input telegram_bot_service
+            data:
+              target: !input telegram_chat_id
+              message: "🏁 Alle verfügbaren Updates wurden angestoßen."
+
+      # FALL: User hat auf Stop geklickt
+      - conditions:
+          - condition: template
+            value_template: "{{ wait.trigger.event.data.data == '/esphome_stop' }}"
+        sequence:
+          - service: !input telegram_bot_service
+            data:
+              target: !input telegram_chat_id
+              message: "❌ Update abgebrochen."
