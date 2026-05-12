@@ -1,185 +1,233 @@
 blueprint:
-  name: ESPHome Auto Bulk Update + Telegram Interaction
-  description: >
-    Vollständige Version des matzeeg3-Blueprints, erweitert um eine interaktive Telegram-Abfrage.
-    Das Update startet erst, wenn du im Telegram-Chat auf 'Start' drückst.
+  name: ESPHome Device Auto Bulk Update (with Telegram)
+  description: |
+    Automatically updates ESPHome devices with support for Companion App and Telegram notifications.
+    DEVICE FIRMWARE ENTITIES MUST BE ENABLED.
   domain: automation
+  source_url: https://github.com/bferd/homeassistant-blueprints/blob/main/esphome_auto_bulk_update.yaml
   input:
-    # --- ORIGINAL INPUTS ---
-    esphome_update_entities:
-      name: ESPHome Update Entities
-      description: Entities to update.
+    update_threshold:
+      name: Device Update Threshold
+      default: 1
       selector:
-        entity:
-          filter:
-            - integration: esphome
-              domain: update
-          multiple: true
-    exclude_devices:
-      name: Exclude Devices
-      description: "Devices to exclude from the update (comma-separated). Example: 'test, beta'"
-      default: ""
-      selector:
-        text:
-    automation_trigger:
-      name: Automation Trigger
-      description: Trigger for the automation.
-      default:
-        - platform: time
-          at: "04:00:00"
-      selector:
-        trigger: {}
-    pre_update_action:
-      name: Pre-update Action
-      description: Action to perform before the first update.
-      default: []
-      selector:
-        action: {}
-    post_update_action:
-      name: Post-update Action
-      description: Action to perform after the last update.
-      default: []
-      selector:
-        action: {}
-    wait_time_between_updates:
-      name: Wait time between updates
-      description: Time to wait between each update.
+        number:
+          min: 1
+          max: 20
+          mode: slider
+    update_delay:
+      name: Delay Before Updating
       default: 30
       selector:
         number:
           min: 0
-          max: 600
-          unit_of_measurement: seconds
-    update_timeout:
-      name: Update Timeout
-      description: Timeout for each update.
-      default: 300
-      selector:
-        number:
-          min: 60
-          max: 3600
-          unit_of_measurement: seconds
-
-    # --- TELEGRAM INPUTS (Erweiterung) ---
-    telegram_chat_id:
-      name: Telegram Chat ID
-      description: "Die ID deines Telegram-Chats. (Hinweis: Ein echtes Dropdown für Chat-IDs wird von Home Assistant für Blueprints leider nicht unterstützt, daher hier die ID eintragen)."
-      selector:
-        text:
-    telegram_bot_service:
-      name: Telegram Bot Service
-      description: Der Dienst zum Senden (meist telegram_bot.send_message).
-      default: telegram_bot.send_message
-      selector:
-        text:
-    confirmation_timeout:
-      name: Wartezeit auf Bestätigung
-      description: Minuten, die auf deine Antwort gewartet wird, bevor die Automatisierung abbricht.
+          max: 60
+          unit_of_measurement: minutes
+    cooldown:
+      name: Cooldown After Update
       default: 60
       selector:
         number:
           min: 1
-          max: 1440
+          max: 120
+          unit_of_measurement: minutes
+    time_window_start:
+      name: Update Window Start
+      default: "08:00:00"
+      selector:
+        time:
+    time_window_end:
+      name: Update Window End
+      default: "21:00:00"
+      selector:
+        time:
+    notify_device:
+      name: Companion App Device
+      description: "Device for Home Assistant Companion App notifications."
+      selector:
+        device:
+          integration: mobile_app
+    telegram_chat_id:
+      name: Telegram Chat ID (Optional)
+      description: "Optional: Enter Chat ID to receive notifications via Telegram."
+      default: ""
+    update_mode:
+      name: Update Mode
+      default: "all_at_once"
+      selector:
+        select:
+          options:
+            - label: "All at once"
+              value: "all_at_once"
+            - label: "One at a time (Sequential)"
+              value: "sequential"
+    sequential_delay:
+      name: Delay Between Sequential Updates
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 10
           unit_of_measurement: minutes
 
-mode: restart
-
-# --- ORIGINAL VARIABLEN LOGIK (unverändert) ---
 variables:
-  entities: !input esphome_update_entities
-  exclude_list: !input exclude_devices
-  update_list: >
-    {% set excludes = exclude_list.split(',') | map('trim') | list %}
-    {% set filtered = entities | select('is_state', 'on') | list %}
-    {% set final = namespace(items=[]) %}
-    {% for item in filtered %}
-      {% set name = state_attr(item, 'friendly_name') %}
-      {% set excluded = namespace(found=false) %}
-      {% for ex in excludes if ex != "" %}
-        {% if ex.lower() in name.lower() %}
-          {% set excluded.found = true %}
-        {% endif %}
-      {% endfor %}
-      {% if not excluded.found %}
-        {% set final.items = final.items + [item] %}
-      {% endif %}
-    {% endfor %}
-    {{ final.items }}
+  update_threshold: !input update_threshold
+  update_delay: !input update_delay
+  cooldown: !input cooldown
+  update_mode: !input update_mode
+  sequential_delay: !input sequential_delay
+  telegram_chat: !input telegram_chat_id
+  device_list: >
+    {{ expand(integration_entities('esphome'))
+        | selectattr("entity_id", "contains", "update")
+        | selectattr("state", "eq", "on")
+        | map(attribute='entity_id') | list }}
+  device_names: >
+    {{ expand(integration_entities('esphome'))
+        | selectattr("entity_id", "contains", "update")
+        | selectattr("state", "eq", "on")
+        | map(attribute='name') | join(', ') }}
+  device_count: >
+    {{ expand(integration_entities('esphome'))
+        | selectattr("entity_id", "contains", "update")
+        | selectattr("state", "eq", "on")
+        | list | count }}
 
-trigger: !input automation_trigger
+trigger:
+  - platform: template
+    value_template: >
+      {{ expand(integration_entities('esphome'))
+          | selectattr("entity_id", "contains", "update")
+          | selectattr("state", "eq", "on")
+          | list | count > 0 }}
+  - platform: time
+    at: !input time_window_start
+
+condition:
+  - condition: time
+    after: !input time_window_start
+    before: !input time_window_end
+  - condition: template
+    value_template: >
+      {{ expand(integration_entities('esphome'))
+          | selectattr("entity_id", "contains", "update")
+          | selectattr("state", "eq", "on")
+          | list | count >= update_threshold }}
 
 action:
-  # 1. Check ob Updates da sind (Original Logik)
-  - condition: template
-    value_template: "{{ update_list | count > 0 }}"
-
-  # 2. Telegram Interaktion (Eingeschobener Block)
-  - service: !input telegram_bot_service
+  # 1. NOTIFICATION BLOCK (Companion App)
+  - continue_on_error: true
+    domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    title: "ESPHome Device Update(s)"
+    message: "{{ device_count }} device(s) need updating: {{ device_names }}. Updates in {{ update_delay }} min."
     data:
-      target: !input telegram_chat_id
-      title: "🤖 *ESPHome Update verfügbar*"
-      message: >
-        Es stehen Updates für {{ update_list | count }} Geräte an.
-        Soll ich mit der Installation beginnen?
-      inline_keyboard:
-        - "✅ Starten:/esphome_start, ❌ Abbrechen:/esphome_stop"
+      actions:
+        - action: "UPDATE_NOW_ESPHOME"
+          title: "Update Now"
+        - action: "CANCEL_ESPHOME_UPDATE"
+          title: "Cancel"
 
+  # 2. NOTIFICATION BLOCK (Telegram)
+  - if:
+      - condition: template
+        value_template: "{{ telegram_chat != '' }}"
+    then:
+      - action: telegram_bot.send_message
+        data:
+          target: "{{ telegram_chat }}"
+          title: "*ESPHome Update*"
+          message: "{{ device_count }} device(s) need updating: {{ device_names }}. Updates in {{ update_delay }} min."
+          data:
+            inline_keyboard:
+              - "Update Now:/UPDATE_NOW_ESPHOME, Cancel:/CANCEL_ESPHOME_UPDATE"
+
+  # 3. WAIT FOR RESPONSE
   - wait_for_trigger:
       - platform: event
-        event_type: telegram_callback
+        event_type: 
+          - mobile_app_notification_action
+          - telegram_callback
         event_data:
-          data: "/esphome_start"
-          chat_id: !input telegram_chat_id
+          action: "CANCEL_ESPHOME_UPDATE"
+      - platform: event
+        event_type: 
+          - mobile_app_notification_action
+          - telegram_callback
+        event_data:
+          action: "UPDATE_NOW_ESPHOME"
       - platform: event
         event_type: telegram_callback
         event_data:
-          data: "/esphome_stop"
-          chat_id: !input telegram_chat_id
+          data: "/CANCEL_ESPHOME_UPDATE"
+      - platform: event
+        event_type: telegram_callback
+        event_data:
+          data: "/UPDATE_NOW_ESPHOME"
     timeout:
-      minutes: !input confirmation_timeout
-    continue_on_timeout: false
+      minutes: "{{ update_delay }}"
+    continue_on_timeout: true
 
-  # 3. Prozesssteuerung basierend auf Antwort
-  - choose:
-      # FALL: START - Hier folgt die KOMPLETTE ORIGINAL-LOGIK
-      - conditions:
+  # 4. EVALUATE RESPONSE
+  - if:
+      - condition: template
+        value_template: >
+          {% set action = wait.trigger.event.data.action if wait.trigger and wait.trigger.event.data.action is defined else '' %}
+          {% set data = wait.trigger.event.data.data if wait.trigger and wait.trigger.event.data.data is defined else '' %}
+          {{ action == 'CANCEL_ESPHOME_UPDATE' or data == '/CANCEL_ESPHOME_UPDATE' }}
+    then:
+      # Cancellation Notifications
+      - action: notify.mobile_app_{{ (device_entities(notify_device) | select('search', 'notify') | list | first).split('.')[-1] }}
+        data:
+          title: "Cancelled"
+          message: "ESPHome updates stopped."
+      - if:
           - condition: template
-            value_template: "{{ wait.trigger.event.data.data == '/esphome_start' }}"
-        sequence:
-          # --- AB HIER: ORIGINAL REPO LOGIK ---
-          - choose: []
-            default: !input pre_update_action
-
+            value_template: "{{ telegram_chat != '' }}"
+        then:
+          - action: telegram_bot.send_message
+            data:
+              target: "{{ telegram_chat }}"
+              message: "❌ Update cancelled."
+    else:
+      # PROCEED WITH UPDATES
+      - if:
+          - condition: template
+            value_template: "{{ update_mode == 'sequential' }}"
+        then:
           - repeat:
-              for_each: "{{ update_list }}"
+              for_each: "{{ device_list }}"
               sequence:
-                - service: update.install
+                - action: update.install
+                  continue_on_error: true
                   target:
                     entity_id: "{{ repeat.item }}"
-                - wait_for_trigger:
-                    - platform: state
-                      entity_id: "{{ repeat.item }}"
-                      to: "off"
-                  timeout: !input update_timeout
-                - condition: template
-                  value_template: "{{ repeat.index < update_list | count }}"
-                - delay: !input wait_time_between_updates
+                - delay:
+                    minutes: "{{ 0 if repeat.last else sequential_delay }}"
+        else:
+          - action: update.install
+            continue_on_error: true
+            target:
+              entity_id: "{{ device_list }}"
 
-          - choose: []
-            default: !input post_update_action
-          # --- ENDE ORIGINAL REPO LOGIK ---
-
-          - service: !input telegram_bot_service
-            data:
-              target: !input telegram_chat_id
-              message: "🏁 Alle ESPHome-Geräte wurden aktualisiert."
-
-      # FALL: ABBRUCH
-      - conditions:
+      # Final Success Notifications
+      - continue_on_error: true
+        domain: mobile_app
+        type: notify
+        device_id: !input notify_device
+        title: "ESPHome Updates Complete"
+        message: "{{ device_count }} device(s) updated."
+      
+      - if:
           - condition: template
-            value_template: "{{ wait.trigger.event.data.data == '/esphome_stop' }}"
-        sequence:
-          - service: !input telegram_bot_service
+            value_template: "{{ telegram_chat != '' }}"
+        then:
+          - action: telegram_bot.send_message
             data:
-              target: !input telegram_chat_id
-              message: "❌ Update-Prozess wurde vom Nutzer abgebrochen."
+              target: "{{ telegram_chat }}"
+              message: "✅ {{ device_count }} ESPHome device(s) updated."
+
+      - delay:
+          minutes: "{{ cooldown }}"
+
+mode: single
